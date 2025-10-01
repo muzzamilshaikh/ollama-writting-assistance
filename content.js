@@ -1,175 +1,72 @@
-// Debounce function to limit API calls
-function debounce(func, wait) {
-  let timeout;
-  return function executedFunction(...args) {
-    const later = () => {
-      clearTimeout(timeout);
-      func(...args);
-    };
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-  };
-}
+// This function expertly replaces only the selected text in any field
+function replaceSelectedText(replacementText) {
+  const activeElement = document.activeElement;
+  if (!activeElement) return;
 
-// Simple spell check cache to avoid repeated API calls
-const spellCheckCache = new Map();
-
-// Check if text likely contains spelling errors (basic heuristic)
-function likelyHasErrors(text) {
-  // Skip if too short or too long
-  if (text.length < 3 || text.length > 100) return false;
-
-  // Skip URLs, emails, code
-  if (text.match(/^https?:\/\/|@|[{}[\]()]/)) return false;
-
-  // Check for common error patterns (doubled letters, unusual patterns)
-  return text.match(/(.)\1{2,}|[^aeiou]{5,}/i) !== null;
-}
-
-// Call local LLM for spell correction
-async function correctSpelling(text) {
-  // Check cache first
-  if (spellCheckCache.has(text)) {
-    return spellCheckCache.get(text);
-  }
-
-  try {
-    const response = await fetch("http://localhost:11434/api/generate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "tinyllama",
-        prompt: `Fix spelling only. Return ONLY the corrected word, nothing else.\nInput: ${text}\nCorrected:`,
-        stream: false,
-        options: {
-          temperature: 0.1,
-          num_predict: 20,
-          top_k: 10,
-          top_p: 0.3,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error("LLM API error");
-    }
-
-    const data = await response.json();
-    const corrected = data.response.trim().split(/\s+/)[0]; // Take only first word
-
-    // Cache the result
-    spellCheckCache.set(text, corrected);
-
-    // Limit cache size
-    if (spellCheckCache.size > 100) {
-      const firstKey = spellCheckCache.keys().next().value;
-      spellCheckCache.delete(firstKey);
-    }
-
-    return corrected;
-  } catch (error) {
-    console.error("Spell check error:", error);
-    return text; // Return original on error
-  }
-}
-
-// Create and show suggestion popup
-function showSuggestion(element, originalText, correctedText, rect) {
-  // Remove existing popup
-  const existing = document.getElementById("llm-spell-popup");
-  if (existing) existing.remove();
-
-  const popup = document.createElement("div");
-  popup.id = "llm-spell-popup";
-  popup.className = "llm-spell-popup";
-  popup.innerHTML = `
-    <div class="llm-spell-suggestion">
-      <span class="original-text">${originalText}</span>
-      <span class="arrow">→</span>
-      <span class="corrected-text">${correctedText}</span>
-    </div>
-    <div class="llm-spell-actions">
-      <button class="apply-btn">Apply</button>
-      <button class="ignore-btn">Ignore</button>
-    </div>
-  `;
-
-  // Position popup near the text
-  popup.style.position = "absolute";
-  popup.style.left = `${rect.left + window.scrollX}px`;
-  popup.style.top = `${rect.bottom + window.scrollY + 5}px`;
-  popup.style.zIndex = "10000";
-
-  document.body.appendChild(popup);
-
-  // Handle apply button
-  popup.querySelector(".apply-btn").addEventListener("click", () => {
-    element.value = element.value.replace(originalText, correctedText);
-    popup.remove();
-  });
-
-  // Handle ignore button
-  popup.querySelector(".ignore-btn").addEventListener("click", () => {
-    popup.remove();
-  });
-
-  // Remove popup when clicking outside
-  setTimeout(() => {
-    document.addEventListener("click", function closePopup(e) {
-      if (!popup.contains(e.target)) {
-        popup.remove();
-        document.removeEventListener("click", closePopup);
-      }
-    });
-  }, 100);
-}
-
-// Handle text input
-const handleInput = debounce(async (event) => {
-  const element = event.target;
-  const text = element.value.trim();
-
-  // Get the last word typed
-  const words = text.split(/\s+/);
-  const lastWord = words[words.length - 1];
-
-  if (lastWord && likelyHasErrors(lastWord)) {
-    const corrected = await correctSpelling(lastWord);
-
-    if (corrected && corrected.toLowerCase() !== lastWord.toLowerCase()) {
-      const rect = element.getBoundingClientRect();
-      showSuggestion(element, lastWord, corrected, rect);
+  // Handle <textarea> and <input>
+  if (activeElement.value !== undefined) {
+    const start = activeElement.selectionStart;
+    const end = activeElement.selectionEnd;
+    const originalValue = activeElement.value;
+    activeElement.value = originalValue.substring(0, start) + replacementText + originalValue.substring(end);
+    
+    // Move cursor to the end of the replacement
+    activeElement.selectionStart = activeElement.selectionEnd = start + replacementText.length;
+  } 
+  // Handle contentEditable elements
+  else if (activeElement.isContentEditable) {
+    const selection = window.getSelection();
+    if (selection.rangeCount > 0) {
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const textNode = document.createTextNode(replacementText);
+      range.insertNode(textNode);
+      
+      // Move cursor to the end of the replacement
+      range.setStartAfter(textNode);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
     }
   }
-}, 1000); // Wait 1 second after typing stops
 
-// Attach to all text inputs and textareas
-function attachSpellChecker() {
-  const inputs = document.querySelectorAll(
-    'input[type="text"], textarea, [contenteditable="true"]'
-  );
-
-  inputs.forEach((input) => {
-    if (!input.dataset.spellCheckerAttached) {
-      input.addEventListener("input", handleInput);
-      input.dataset.spellCheckerAttached = "true";
-    }
-  });
+  // Dispatch an input event to notify frameworks of the change
+  const event = new Event('input', { bubbles: true, cancelable: true });
+  activeElement.dispatchEvent(event);
 }
 
-// Initialize
-attachSpellChecker();
 
-// Watch for new inputs added dynamically
-const observer = new MutationObserver(() => {
-  attachSpellChecker();
+// --- Main Message Listener ---
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  const activeElement = document.activeElement;
+
+  if (request.action === "getText") {
+    let text = null;
+    if (activeElement) {
+        // For inputs/textareas, use the selected text if there is any, otherwise use the whole value
+        if (activeElement.value !== undefined && activeElement.selectionStart !== activeElement.selectionEnd) {
+            text = activeElement.value.substring(activeElement.selectionStart, activeElement.selectionEnd);
+        } else if (activeElement.value !== undefined) {
+            text = activeElement.value;
+        } else if (activeElement.isContentEditable) {
+            text = window.getSelection().toString() || activeElement.innerText;
+        }
+    }
+    sendResponse({ text: text });
+  }
+
+  if (request.action === "setText") {
+    // This is from the popup, which replaces the whole text
+    if (activeElement) {
+      if (activeElement.value !== undefined) activeElement.value = request.text;
+      else if (activeElement.isContentEditable) activeElement.innerText = request.text;
+      const event = new Event('input', { bubbles: true, cancelable: true });
+      activeElement.dispatchEvent(event);
+    }
+  }
+
+  if (request.action === "replaceSelection") {
+    // This is from the context menu
+    replaceSelectedText(request.text);
+  }
 });
-
-observer.observe(document.body, {
-  childList: true,
-  subtree: true,
-});
-
-console.log("Local LLM Spell Checker loaded!");
